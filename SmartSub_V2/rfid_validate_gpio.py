@@ -21,13 +21,13 @@ PIN_RED    = 27
 PIN_BUZZER = 22
 
 # API
-API_URL_BASE   = "http://brtat-hom-001:9062/api/checkpoint-posto/6100/4041/1"
+API_URL_BASE   = "http://brtat-hom-001:9062/api/checkpoint-posto/6100/4041/92"
 API_METHOD     = "POST"
 API_TIMEOUT    = 2.5
 API_HEADERS    = {}  # {"Authorization": "Bearer ..."} se necessário
 
 # Comportamento
-REMINDER_AFTER_S    = 30   # Tempo de ociosidade até disparar o alerta
+REMINDER_AFTER_S    = 7200   # Tempo de ociosidade até disparar o alerta
 REMINDER_INTERVAL_S = 2.0  # Intervalo entre alertas após estourar
 MIN_REPEAT_SECONDS  = 1.0  # Tempo mínimo entre leituras da mesma tag
 
@@ -91,6 +91,8 @@ class SmartSubValidator:
         self.buzzer = DigitalOutputDevice(PIN_BUZZER)
         self.io_lock = asyncio.Lock()
 
+        self.alert_task = None
+
         # Estado do Sistema
         self.state = {
             "has_ok": False,
@@ -116,6 +118,9 @@ class SmartSubValidator:
 
     async def feedback_ok(self):
         self.green.on()
+        self.buzzer.on()
+        await asyncio.sleep(0.18)
+        self.buzzer.off()
         await asyncio.sleep(0.18)
         self.green.off()
 
@@ -128,13 +133,25 @@ class SmartSubValidator:
         await asyncio.sleep(0.05)
         self.red.off()
 
+    # async def feedback_alert(self):
+    #     # 2x vermelho + bip simultâneos
+    #     for _ in range(2):
+    #         self.red.on()
+    #         self.buzzer.on()
+    #         await asyncio.sleep(0.12)
+    #         self.red.off()
+    #         self.buzzer.off()
+    #         await asyncio.sleep(0.12)
     async def feedback_alert(self):
-        # 2x vermelho + bip simultâneos
+        # 1. Se a tarefa do LED não existe ou já morreu, inicia ela
+        if self.alert_task is None or self.alert_task.done():
+            self.alert_task = asyncio.create_task(self._blink_red_loop())
+
+        # 2. Executa APENAS o Bip Duplo (o LED já está piscando na task acima)
+        # Como o LED é controlado pela outra task, aqui mexemos só no buzzer
         for _ in range(2):
-            self.red.on()
             self.buzzer.on()
             await asyncio.sleep(0.12)
-            self.red.off()
             self.buzzer.off()
             await asyncio.sleep(0.12)
 
@@ -171,6 +188,16 @@ class SmartSubValidator:
             return False
 
     async def handle_tag(self, tag: str):
+        # --- NOVO TRECHO: Para o alerta visual assim que ler algo ---
+        if self.alert_task and not self.alert_task.done():
+            self.alert_task.cancel()
+            try:
+                await self.alert_task
+            except asyncio.CancelledError:
+                pass
+            self.alert_task = None
+            self.red.off() # Garante apagado
+        # -----------------------------------------------------------
         self.state["processing"] = True
         try:
             now = time.monotonic()
@@ -297,6 +324,18 @@ class SmartSubValidator:
             print("\nParando...")
         finally:
             self.shutdown()
+
+    async def _blink_red_loop(self):
+        """Mantém o LED vermelho piscando indefinidamente."""
+        try:
+            while True:
+                self.red.on()
+                await asyncio.sleep(0.2) # Tempo ligado
+                self.red.off()
+                await asyncio.sleep(0.2) # Tempo desligado
+        except asyncio.CancelledError:
+            # Garante que apaga ao ser cancelado
+            self.red.off()
 
 # ==============================================================================
 # ENTRY POINT
