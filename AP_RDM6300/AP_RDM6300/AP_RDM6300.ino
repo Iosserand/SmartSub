@@ -8,6 +8,31 @@
 #define PIN_BUTTON_RESET 0
 #define TEMPO_PARA_RESET 5000
 
+// -------------------- LED (ONBOARD) --------------------
+#ifndef LED_BUILTIN
+
+  #define LED_BUILTIN 2   // Padrão mais comum no ESP32 (LED azul on-board)
+#endif
+
+#define PIN_LED_BLUE LED_BUILTIN
+
+// Se no seu board o LED acende com LOW (inverso), mude para true
+#define LED_BLUE_ACTIVE_LOW false
+
+inline void blueLedWrite(bool on) {
+  digitalWrite(PIN_LED_BLUE, LED_BLUE_ACTIVE_LOW ? !on : on);
+}
+
+void blueLedBlink(uint8_t times, uint16_t onMs = 80, uint16_t offMs = 80) {
+  for (uint8_t i = 0; i < times; i++) {
+    blueLedWrite(true);
+    delay(onMs);
+    blueLedWrite(false);
+    delay(offMs);
+  }
+}
+
+
 // Leitor HDM/RDM6300 (UART)
 #define RFID_RX_PIN 16
 #define RFID_TX_PIN 17
@@ -19,7 +44,7 @@
 
 // -------------------- CONFIGURAÇÃO DE SOM (Passivo) --------------------
 #define TOM_OK 2500     // Agudo (Sucesso)
-#define TOM_NOK 300     // Grave (Erro)
+#define TOM_NOK 600     // Grave (Erro)
 #define TOM_ALERTA 1500 // Médio (Atenção)
 #define TOM_START 2000  // Inicialização
 
@@ -61,7 +86,7 @@ const unsigned long INTERVALO_BLOQUEIO = 5000;
 
 // -------------------- REVALIDACAO (DINÂMICO) --------------------
 // O valor fixo foi removido. Agora usamos esta variavel:
-unsigned long intervaloRevalidacaoMs = 7200000; // Será sobrescrito no setup
+unsigned long intervaloRevalidacaoMs = 3600000; // Será sobrescrito no setup
 
 static constexpr uint32_t LEMBRETE_A_CADA_MS = 60UL * 1000UL; // 1 minuto entre alertas
 
@@ -194,19 +219,26 @@ void limparTudo()
     {
         digitalWrite(PIN_LED_GREEN, HIGH);
         digitalWrite(PIN_LED_RED, HIGH);
+        blueLedWrite(true);
         tone(PIN_BUZZER, 2000);
-        delay(100);
-        tone(PIN_BUZZER, 1000);
         delay(100);
         digitalWrite(PIN_LED_GREEN, LOW);
         digitalWrite(PIN_LED_RED, LOW);
+        blueLedWrite(false);
+        tone(PIN_BUZZER, 1000);
+        delay(100);
     }
     noTone(PIN_BUZZER);
+
+    // Indica "apagando configurações"
+    blueLedBlink(6, 60, 60);
 
     wifiManager.resetSettings();
     preferences.begin("identidade", false);
     preferences.clear();
     preferences.end();
+    blueLedBlink(10, 50, 50);
+    blueLedWrite(false);
     ESP.restart();
 }
 
@@ -430,13 +462,16 @@ void setup()
     pinMode(PIN_LED_RED, OUTPUT);
     pinMode(PIN_BUZZER, OUTPUT);
 
+    pinMode(PIN_LED_BLUE, OUTPUT);
+    blueLedWrite(false);
+
     digitalWrite(PIN_LED_GREEN, LOW);
     digitalWrite(PIN_LED_RED, LOW);
     noTone(PIN_BUZZER);
 
     // --- CARREGAR PREFERENCIAS ---
     preferences.begin("identidade", false);
-    String linha_str = preferences.getString("linha", "Indefinida");
+    String linha_str = preferences.getString("linha", "");
     String posto_str = preferences.getString("posto", "00");
     // Carrega o tempo (default 120 minutos se vazio)
     String tempo_str = preferences.getString("tempo", "120");
@@ -507,12 +542,41 @@ void setup()
 }
 
 // -------------------- LOOP --------------------
+// void loop()
+// {
+//     verificarBotaoReset();
+//     verificarOciosidade();
+//     lerRFID();
+
+//     if (cardEmPresenca.length() > 0 && (millis() - ultimoFrameMs) > GAP_SEM_FRAME_PARA_LIBERAR)
+//     {
+//         cardEmPresenca = "";
+//     }
+// }
 void loop()
 {
     verificarBotaoReset();
-    verificarOciosidade();
-    lerRFID();
 
+    // VERIFICAÇÃO DE CONEXÃO (NOVA LÓGICA)
+    if (WiFi.status() != WL_CONNECTED) {
+        // --- MODO OFFLINE ---
+        // 1. Acende o LED Vermelho de forma contínua para indicar queda de rede
+        digitalWrite(PIN_LED_RED, HIGH);
+        
+        // 2. Lemos o RFID para dar feedback sonoro de "Erro" se alguém tentar usar
+        lerRFID();
+
+        // OBS: Não chamamos verificarOciosidade() aqui para evitar conflito no LED.
+        // Se a rede cair, o alerta de rede tem prioridade sobre o alerta de revalidação.
+    } 
+    else {
+        // --- MODO ONLINE ---
+        // Se o LED ficou preso no HIGH pelo modo offline, a função abaixo vai corrigir/apagar
+        verificarOciosidade(); 
+        lerRFID();
+    }
+
+    // Limpeza de buffer do cartão (Lógica existente mantida)
     if (cardEmPresenca.length() > 0 && (millis() - ultimoFrameMs) > GAP_SEM_FRAME_PARA_LIBERAR)
     {
         cardEmPresenca = "";
